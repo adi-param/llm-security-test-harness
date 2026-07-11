@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# uv
+.uv/
+
+# Node / promptfoo
+node_modules/
+.promptfoo/
+
+# Harness output (runs are reproducible; sample reports are committed deliberately)
+reports/*.json
+reports/*.md
+!reports/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
