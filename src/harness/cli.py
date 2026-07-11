@@ -7,11 +7,15 @@ you select which to run.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.adapters.promptfoo import PromptfooAdapter
+from harness.detectors.deterministic import ExactMatchDetector, NormalizedMatchDetector
+from harness.detectors.semantic import SemanticJudgeDetector
+from harness.detectors.suite import DetectorSuite
 from harness.report import summarize, summarize_by_target, write_json, write_markdown
 
 
@@ -40,6 +44,26 @@ def main(argv: list[str] | None = None) -> int:
         default="npx",
         help='"npx" (default) or "promptfoo" if installed globally.',
     )
+    parser.add_argument(
+        "--scenario",
+        default="configs/scenario.json",
+        help="Detection scenario (canary secret + chunks). Default: configs/scenario.json.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="llama3.1:8b",
+        help="Ollama model for the advisory semantic detector (default: llama3.1:8b).",
+    )
+    parser.add_argument(
+        "--judge-url",
+        default="http://127.0.0.1:11434",
+        help="Ollama base URL for the judge (default loopback IP, avoids the LAN prompt).",
+    )
+    parser.add_argument(
+        "--no-semantic",
+        action="store_true",
+        help="Skip the advisory semantic judge (deterministic detectors only).",
+    )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -47,10 +71,24 @@ def main(argv: list[str] | None = None) -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     raw_path = out_dir / f"promptfoo-raw-{stamp}.json"
 
+    # 1. Capture: promptfoo sends the attacks and returns the raw model responses.
     adapter = PromptfooAdapter(args.config, binary=args.promptfoo_bin)
     # Which models get tested comes from the providers list in the config, not --target.
     print(f"[harness] running {adapter.name} using config {args.config} ...")
     findings = adapter.run(args.target, raw_out=raw_path)
+
+    # 2. Detect: the harness's own detector suite decides the verdicts (tool-agnostic).
+    canary = json.loads(Path(args.scenario).read_text())["canary"]
+    detectors = [
+        ExactMatchDetector(canary["secret"], canary.get("chunks", [])),
+        NormalizedMatchDetector(canary["secret"]),
+    ]
+    if not args.no_semantic:
+        detectors.append(
+            SemanticJudgeDetector(canary["secret"], model=args.judge_model, base_url=args.judge_url)
+        )
+    print(f"[harness] detectors: {', '.join(d.name for d in detectors)}")
+    DetectorSuite(detectors).evaluate(findings)
 
     json_path = write_json(findings, out_dir / f"report-{stamp}.json", args.target)
     md_path = write_markdown(findings, out_dir / f"report-{stamp}.md", args.target)
@@ -68,6 +106,11 @@ def main(argv: list[str] | None = None) -> int:
         f"{s['vulnerabilities']} vulnerabilities · "
         f"{s['resisted']} resisted · {s['errors']} errors · risk={s['risk_score']}"
     )
+    if s.get("detector_disagreements"):
+        print(
+            f"[harness] detector disagreements: {s['detector_disagreements']} "
+            f"({s['advisory_flags_for_review']} advisory-only flags for review — not counted as vulns)"
+        )
     print(f"[harness] report:     {md_path}")
     print(f"[harness] report:     {json_path}")
     print(f"[harness] raw output: {raw_path}")

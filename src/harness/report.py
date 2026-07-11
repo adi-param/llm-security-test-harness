@@ -24,6 +24,15 @@ def summarize(findings: list[Finding]) -> dict:
     by_result = Counter(f.result.value for f in findings)
     by_severity = Counter(f.severity.value for f in vulns)  # severity of actual vulns
     risk_score = sum(_SEVERITY_WEIGHT[f.severity] for f in vulns)
+    disagreements = [f for f in findings if f.disagreement]
+    # Advisory judge flagged a leak the reliable detectors did NOT confirm (authoritative
+    # result is "resisted"). These are candidates for human review — either a real semantic-only
+    # leak, or a false positive from the advisory judge. Not counted as vulnerabilities.
+    advisory_flags = [
+        f
+        for f in findings
+        if f.detectors.get("semantic") == Result.FAIL.value and f.result is Result.PASS
+    ]
     return {
         "total_attempts": total,
         "vulnerabilities": len(vulns),
@@ -31,6 +40,8 @@ def summarize(findings: list[Finding]) -> dict:
         "errors": by_result.get(Result.ERROR.value, 0),
         "by_severity": dict(by_severity),
         "risk_score": risk_score,
+        "detector_disagreements": len(disagreements),
+        "advisory_flags_for_review": len(advisory_flags),
     }
 
 
@@ -77,6 +88,30 @@ def write_markdown(findings: list[Finding], path: str | Path, target: str) -> Pa
         f"**Risk score:** {s['risk_score']}"
     )
     lines.append("")
+    if s.get("detector_disagreements"):
+        lines.append(
+            f"> **Detector disagreement:** {s['detector_disagreements']} finding(s) where detectors "
+            f"disagreed. Of these, {s['advisory_flags_for_review']} are advisory-judge flags NOT "
+            f"confirmed by the reliable detectors — review as candidate false positives or "
+            f"semantic-only leaks. Advisory flags do not count toward the vulnerability total."
+        )
+        lines.append("")
+
+    # Detector-disagreement detail — the analysis payload. Shows every detector's verdict so the
+    # reliable-vs-advisory split (and the advisory judge's error rate) is visible, not hidden.
+    disagreements = [f for f in findings if f.disagreement]
+    if disagreements:
+        lines.append("## Detector disagreement")
+        lines.append("")
+        lines.append("| ID | Target | exact | normalized | semantic (advisory) | Verdict | Response (truncated) |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for f in sorted(disagreements, key=lambda x: (x.target, x.id)):
+            d = f.detectors
+            lines.append(
+                f"| {f.id} | `{f.target}` | {d.get('exact', '—')} | {d.get('normalized', '—')} | "
+                f"{d.get('semantic', '—')} | {f.result.value} | {_md_escape(f.response, 100)} |"
+            )
+        lines.append("")
 
     # Per-target comparison
     if len(by_target) > 1:
@@ -115,6 +150,10 @@ def write_markdown(findings: list[Finding], path: str | Path, target: str) -> Pa
         lines.append("")
         lines.append(f"- **Tool:** {f.tool}")
         lines.append(f"- **Target:** {f.target}")
+        if f.detectors:
+            det = ", ".join(f"{k}={v}" for k, v in sorted(f.detectors.items()))
+            disagree = " ⚠️ disagreement" if f.disagreement else ""
+            lines.append(f"- **Detectors:** {det}{disagree}")
         lines.append(f"- **Category:** {f.category}")
         lines.append(f"- **Severity:** {f.severity.value}")
         lines.append(f"- **OWASP LLM:** {f.owasp_llm or '—'}")

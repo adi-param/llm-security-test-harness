@@ -98,19 +98,11 @@ class PromptfooAdapter(ScannerAdapter):
             test_case = r.get("testCase") or {}
             meta = test_case.get("metadata") or r.get("metadata") or {}
 
-            success = r.get("success")
-            if success is True:
-                result = Result.PASS
-            elif success is False:
-                result = Result.FAIL
-            else:
-                result = Result.ERROR
-
+            # The adapter no longer decides pass/fail — detection is the harness's job
+            # (see harness.detectors). We only capture what the model returned. The detector
+            # suite fills in `result`, `evidence`, and `detectors` downstream.
             response_obj = r.get("response") or {}
             response = response_obj.get("output") or r.get("output") or ""
-
-            grading = r.get("gradingResult") or {}
-            evidence = grading.get("reason") or ""
 
             prompt = r.get("prompt")
             if isinstance(prompt, dict):
@@ -131,12 +123,12 @@ class PromptfooAdapter(ScannerAdapter):
                     probe=test_case.get("description") or meta.get("category", "unknown"),
                     category=str(meta.get("category", "unknown")),
                     severity=severity,
-                    result=result,
+                    result=Result.ERROR,  # provisional; the detector suite sets the real verdict
                     owasp_llm=meta.get("owasp_llm"),
                     atlas_technique=meta.get("atlas"),
                     prompt=str(prompt),
                     response=str(response),
-                    evidence=str(evidence),
+                    evidence="",
                     target=self._provider_id(r, target),
                 )
             )

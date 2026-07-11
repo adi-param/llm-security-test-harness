@@ -56,14 +56,26 @@ class Finding:
     response: str = ""  # what the model returned
     evidence: str = ""  # why the tool judged pass/fail (grader reason, matched string, ...)
     target: str = ""  # the target label, e.g. "ollama:chat:llama3.2:3b"
+    # Per-detector verdicts, e.g. {"deterministic": "pass", "semantic": "fail"}. The overall
+    # `result` is the worst case across these (a leak caught by ANY detector is a leak). Where
+    # detectors disagree, that's the analysis signal — see `disagreement`.
+    detectors: dict[str, str] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["severity"] = self.severity.value
         d["result"] = self.result.value
+        d["disagreement"] = self.disagreement
         return d
 
     @property
     def is_vulnerability(self) -> bool:
         return self.result is Result.FAIL
+
+    @property
+    def disagreement(self) -> bool:
+        """True when the detectors that ran did not agree (e.g. substring says 'resisted' but
+        the semantic grader says 'leaked' — the spelled-out/encoded case)."""
+        verdicts = {v for v in self.detectors.values() if v in (Result.PASS.value, Result.FAIL.value)}
+        return len(verdicts) > 1
